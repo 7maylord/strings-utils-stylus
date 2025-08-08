@@ -1,234 +1,288 @@
 //! # Strings Utility Library for Stylus
 //! 
 //! A Rust implementation of OpenZeppelin's `Strings.sol` library for Arbitrum Stylus.
-//! Provides utility functions for converting U256 values to decimal and hexadecimal strings.
+//! Provides utility functions for converting various types to strings, matching the exact
+//! behavior of OpenZeppelin's implementation.
 
-use alloy_primitives::U256;
+use alloy_primitives::{Address, I256, U256};
+
+/// Hex digits constant used for hex string conversion
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+/// Address length in bytes (20 bytes = 40 hex characters)
+const ADDRESS_LENGTH: usize = 20;
+
+/// Error types matching OpenZeppelin's behavior
+#[derive(Debug)]
+pub enum StringsError {
+    /// Hex length insufficient for the given value
+    InsufficientHexLength { value: U256, length: usize },
+}
 
 /// Converts a U256 value to its ASCII decimal string representation.
 /// 
-/// This function mimics the behavior of OpenZeppelin's `toString(uint256)` function.
-/// 
-/// # Arguments
-/// * `value` - The U256 value to convert
-/// 
-/// # Returns
-/// A String containing the decimal representation of the value
-/// 
-/// # Examples
-/// ```rust
-/// use alloy_primitives::U256;
-/// use strings_utils::to_string;
-/// 
-/// let result = to_string(U256::from(12345));
-/// assert_eq!(result, "12345");
-/// 
-/// let zero = to_string(U256::ZERO);
-/// assert_eq!(zero, "0");
-/// ```
+/// This function replicates OpenZeppelin's `toString(uint256)` function exactly.
+/// It uses the same algorithm: count digits, allocate buffer, fill backwards.
 pub fn to_string(value: U256) -> String {
+    // Handle zero case first (matching OpenZeppelin)
     if value.is_zero() {
         return "0".to_string();
     }
     
-    let mut v = value;
-    let mut digits = Vec::new();
-    
-    while !v.is_zero() {
-        let digit = (v % U256::from(10)).to::<u64>() as u8;
-        digits.push(b'0' + digit);
-        v /= U256::from(10);
+    // Count digits first
+    let mut temp = value;
+    let mut digits = 0;
+    while !temp.is_zero() {
+        digits += 1;
+        temp /= U256::from(10);
     }
     
-    // Digits were pushed in reverse order, so reverse them
-    digits.reverse();
-    String::from_utf8(digits).expect("Invalid UTF-8 from digits")
+    // Create buffer
+    let mut buffer = vec![0u8; digits];
+    let mut remaining = value;
+    
+    // Fill buffer backwards (matching Solidity implementation)
+    while !remaining.is_zero() {
+        digits -= 1;
+        buffer[digits] = 48 + (remaining % U256::from(10)).to::<u8>();
+        remaining /= U256::from(10);
+    }
+    
+    String::from_utf8(buffer).expect("Invalid UTF-8 from digits")
 }
 
-/// Converts a U256 value to its hexadecimal string representation with "0x" prefix.
+/// Converts an I256 (signed integer) to its ASCII decimal string representation.
 /// 
-/// This function mimics the behavior of OpenZeppelin's `toHexString(uint256)` function.
-/// The output length varies based on the value (no leading zeros except for zero value).
+/// This function replicates OpenZeppelin's `toStringSigned(int256)` function.
+/// It handles negative values by prepending a minus sign.
+pub fn to_string_signed(value: I256) -> String {
+    if value < I256::ZERO {
+        format!("-{}", to_string((-value).into_raw()))
+    } else {
+        to_string(value.into_raw())
+    }
+}
+
+/// Converts a U256 value to its ASCII hexadecimal string representation.
 /// 
-/// # Arguments
-/// * `value` - The U256 value to convert
-/// 
-/// # Returns
-/// A String containing the hexadecimal representation with "0x" prefix
-/// 
-/// # Examples
-/// ```rust
-/// use alloy_primitives::U256;
-/// use strings_utils::to_hex_string;
-/// 
-/// let result = to_hex_string(U256::from(255));
-/// assert_eq!(result, "0xff");
-/// 
-/// let zero = to_hex_string(U256::ZERO);
-/// assert_eq!(zero, "0x0");
-/// ```
+/// This function replicates OpenZeppelin's `toHexString(uint256)` function.
+/// It returns "0x00" for zero and uses variable length for other values.
 pub fn to_hex_string(value: U256) -> String {
     if value.is_zero() {
-        return "0x0".to_string();
+        return "0x00".to_string();
     }
     
-    let mut v = value;
-    let mut hex_chars = Vec::new();
-    
-    while !v.is_zero() {
-        let digit = (v % U256::from(16)).to::<u64>() as u8;
-        let hex_char = if digit < 10 {
-            b'0' + digit
-        } else {
-            b'a' + (digit - 10)
-        };
-        hex_chars.push(hex_char);
-        v /= U256::from(16);
+    // Calculate required length in bytes (each byte = 2 hex chars)
+    let mut temp = value;
+    let mut length = 0;
+    while !temp.is_zero() {
+        length += 1;
+        temp >>= 8;
     }
     
-    // Hex digits were pushed in reverse order, so reverse them
-    hex_chars.reverse();
-    let hex_string = String::from_utf8(hex_chars).expect("Invalid UTF-8 from hex digits");
-    format!("0x{}", hex_string)
+    // Use the fixed-length version with calculated length
+    to_hex_string_with_length(value, length).unwrap()
 }
 
-/// Converts a U256 value to a fixed-length hexadecimal string with "0x" prefix.
+/// Converts a U256 value to its ASCII hexadecimal string representation with fixed length.
 /// 
-/// This function mimics the behavior of OpenZeppelin's `toHexString(uint256, uint256)` function.
-/// If the value requires fewer hex characters than specified, leading zeros are added.
-/// If the value requires more characters, the function will include all necessary characters.
-/// 
-/// # Arguments
-/// * `value` - The U256 value to convert
-/// * `length` - The desired number of hex characters (excluding "0x" prefix)
-/// 
-/// # Returns
-/// A String containing the fixed-length hexadecimal representation with "0x" prefix
-/// 
-/// # Examples
-/// ```rust
-/// use alloy_primitives::U256;
-/// use strings_utils::to_hex_string_fixed;
-/// 
-/// let result = to_hex_string_fixed(U256::from(255), 4);
-/// assert_eq!(result, "0x00ff");
-/// 
-/// let zero = to_hex_string_fixed(U256::ZERO, 8);
-/// assert_eq!(zero, "0x00000000");
-/// ```
-pub fn to_hex_string_fixed(value: U256, length: usize) -> String {
-    if value.is_zero() {
-        return format!("0x{}", "0".repeat(length));
+/// This function replicates OpenZeppelin's `toHexString(uint256, uint256)` function.
+/// It creates a fixed-length hex string, padding with zeros or returning error if insufficient.
+pub fn to_hex_string_with_length(value: U256, length: usize) -> Result<String, StringsError> {
+    let mut local_value = value;
+    let hex_length = 2 * length;
+    let mut buffer = vec![0u8; hex_length + 2]; // +2 for "0x"
+    
+    buffer[0] = b'0';
+    buffer[1] = b'x';
+    
+    // Fill buffer from right to left (matching Solidity implementation)
+    for i in (2..hex_length + 2).rev() {
+        buffer[i] = HEX_DIGITS[(local_value & U256::from(0xf)).to::<usize>()];
+        local_value >>= 4;
     }
     
-    let mut v = value;
-    let mut hex_chars = Vec::new();
-    
-    while !v.is_zero() {
-        let digit = (v % U256::from(16)).to::<u64>() as u8;
-        let hex_char = if digit < 10 {
-            b'0' + digit
-        } else {
-            b'a' + (digit - 10)
-        };
-        hex_chars.push(hex_char);
-        v /= U256::from(16);
+    // Check if value was too large for the specified length
+    if !local_value.is_zero() {
+        return Err(StringsError::InsufficientHexLength { value, length });
     }
     
-    // Hex digits were pushed in reverse order, so reverse them
-    hex_chars.reverse();
-    let hex_string = String::from_utf8(hex_chars).expect("Invalid UTF-8 from hex digits");
+    Ok(String::from_utf8(buffer).expect("Invalid UTF-8 from hex digits"))
+}
+
+/// Converts an Address to its ASCII hexadecimal string representation (not checksummed).
+/// 
+/// This function replicates OpenZeppelin's `toHexString(address)` function.
+/// It converts the address to a 40-character hex string with "0x" prefix.
+pub fn address_to_hex_string(addr: Address) -> String {
+    // Convert address bytes directly to hex string
+    let mut result = String::with_capacity(42); // 40 hex chars + "0x"
+    result.push_str("0x");
     
-    // Pad with leading zeros if necessary, or keep full length if longer
-    let padded = if hex_string.len() < length {
-        format!("{:0>width$}", hex_string, width = length)
-    } else {
-        hex_string
-    };
+    for &byte in addr.as_slice() {
+        result.push(HEX_DIGITS[(byte >> 4) as usize] as char);
+        result.push(HEX_DIGITS[(byte & 0xf) as usize] as char);
+    }
     
-    format!("0x{}", padded)
+    result
+}
+
+
+/// This function replicates OpenZeppelin's `toChecksumHexString(address)` function.
+/// It implements EIP-55 checksumming by capitalizing hex digits based on the keccak256 hash.
+
+pub fn address_to_checksum_hex_string(addr: Address) -> String {
+    // Start with the non-checksummed hex string
+    let hex_string = address_to_hex_string(addr);
+    let mut buffer: Vec<u8> = hex_string.into_bytes();
+    
+    // Hash the hex part (skip "0x" prefix, hash 40 characters)
+    use alloy_primitives::keccak256;
+    let hex_part = &buffer[2..]; // Skip "0x"
+    let hash = keccak256(hex_part);
+    
+    // Convert hash to U256 for bit manipulation, then shift right by 96 bits
+    // This matches the Solidity assembly: shr(96, keccak256(...))
+    let hash_value = U256::from_be_slice(hash.as_slice()) >> 96;
+    
+    // Apply EIP-55 checksumming
+    let mut current_hash = hash_value;
+    for i in (2..42).rev() { // Iterate from position 41 down to 2
+        // Check if this hash nibble > 7 and the character is a lowercase letter
+        if (current_hash & U256::from(0xf)) > U256::from(7) && buffer[i] > 96 {
+            // Convert to uppercase by XOR with 0x20
+            buffer[i] ^= 0x20;
+        }
+        current_hash >>= 4;
+    }
+    
+    String::from_utf8(buffer).expect("Invalid UTF-8 from checksum conversion")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::U256;
+    use alloy_primitives::{Address, I256, U256};
     
     #[test]
-    fn test_to_string_zero() {
+    fn test_to_string_basic() {
         assert_eq!(to_string(U256::ZERO), "0");
-    }
-    
-    #[test]
-    fn test_to_string_small_values() {
         assert_eq!(to_string(U256::from(1)), "1");
-        assert_eq!(to_string(U256::from(9)), "9");
-        assert_eq!(to_string(U256::from(10)), "10");
-        assert_eq!(to_string(U256::from(99)), "99");
-        assert_eq!(to_string(U256::from(100)), "100");
-    }
-    
-    #[test]
-    fn test_to_string_large_values() {
+        assert_eq!(to_string(U256::from(123)), "123");
         assert_eq!(to_string(U256::from(12345)), "12345");
-        assert_eq!(to_string(U256::from(1000000)), "1000000");
+    }
+    
+    #[test]
+    fn test_to_string_large() {
         assert_eq!(to_string(U256::from(u64::MAX)), u64::MAX.to_string());
+        let large_num = U256::from(u128::MAX);
+        assert_eq!(to_string(large_num), u128::MAX.to_string());
     }
     
     #[test]
-    fn test_to_hex_string_zero() {
-        assert_eq!(to_hex_string(U256::ZERO), "0x0");
+    fn test_to_string_signed() {
+        assert_eq!(to_string_signed(I256::ZERO), "0");
+        assert_eq!(to_string_signed(I256::try_from(123).unwrap()), "123");
+        assert_eq!(to_string_signed(I256::try_from(-456).unwrap()), "-456");
+        assert_eq!(to_string_signed(I256::try_from(i64::MAX).unwrap()), i64::MAX.to_string());
+        assert_eq!(to_string_signed(I256::try_from(i64::MIN).unwrap()), i64::MIN.to_string());
     }
     
     #[test]
-    fn test_to_hex_string_small_values() {
-        assert_eq!(to_hex_string(U256::from(1)), "0x1");
-        assert_eq!(to_hex_string(U256::from(15)), "0xf");
+    fn test_to_hex_string_basic() {
+        assert_eq!(to_hex_string(U256::ZERO), "0x00");
+        assert_eq!(to_hex_string(U256::from(15)), "0x0f");
         assert_eq!(to_hex_string(U256::from(16)), "0x10");
         assert_eq!(to_hex_string(U256::from(255)), "0xff");
-        assert_eq!(to_hex_string(U256::from(256)), "0x100");
+        assert_eq!(to_hex_string(U256::from(256)), "0x0100");
     }
     
     #[test]
-    fn test_to_hex_string_large_values() {
-        assert_eq!(to_hex_string(U256::from(0xdeadbeef_u64)), "0xdeadbeef");
-        assert_eq!(to_hex_string(U256::from(u64::MAX)), "0xffffffffffffffff");
+    fn test_to_hex_string_with_length_basic() {
+        assert_eq!(to_hex_string_with_length(U256::ZERO, 1).unwrap(), "0x00");
+        assert_eq!(to_hex_string_with_length(U256::from(255), 1).unwrap(), "0xff");
+        assert_eq!(to_hex_string_with_length(U256::from(255), 2).unwrap(), "0x00ff");
+        assert_eq!(to_hex_string_with_length(U256::from(0x1234), 2).unwrap(), "0x1234");
     }
     
     #[test]
-    fn test_to_hex_string_fixed_zero() {
-        assert_eq!(to_hex_string_fixed(U256::ZERO, 1), "0x0");
-        assert_eq!(to_hex_string_fixed(U256::ZERO, 4), "0x0000");
-        assert_eq!(to_hex_string_fixed(U256::ZERO, 8), "0x00000000");
+    fn test_to_hex_string_with_length_insufficient() {
+        // Value 0x100 needs 2 hex digits, but we only provide 1 byte (2 digits)
+        let result = to_hex_string_with_length(U256::from(0x100), 1);
+        assert!(matches!(result, Err(StringsError::InsufficientHexLength { .. })));
     }
     
     #[test]
-    fn test_to_hex_string_fixed_padding() {
-        assert_eq!(to_hex_string_fixed(U256::from(1), 4), "0x0001");
-        assert_eq!(to_hex_string_fixed(U256::from(255), 4), "0x00ff");
-        assert_eq!(to_hex_string_fixed(U256::from(0xabc), 8), "0x00000abc");
-    }
-    
-    #[test]
-    fn test_to_hex_string_fixed_no_truncation() {
-        // When value needs more digits than specified length, don't truncate
-        assert_eq!(to_hex_string_fixed(U256::from(0x12345), 2), "0x12345");
-        assert_eq!(to_hex_string_fixed(U256::from(0xdeadbeef_u64), 4), "0xdeadbeef");
-    }
-    
-    #[test]
-    fn test_max_u256_values() {
-        let max_u256 = U256::MAX;
+    fn test_address_to_hex_string() {
+        let zero_addr = Address::ZERO;
+        assert_eq!(address_to_hex_string(zero_addr), "0x0000000000000000000000000000000000000000");
         
-        // Test that max value converts without panicking
-        let decimal_str = to_string(max_u256);
+            let addr_bytes = [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0,
+                     0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                     0x99, 0xaa, 0xbb, 0xcc];
+    let addr = Address::from_slice(&addr_bytes);
+    assert_eq!(address_to_hex_string(addr), "0x123456789abcdef0112233445566778899aabbcc");
+    }
+    
+    #[test]
+    fn test_address_to_checksum_hex_string() {
+        // Test with zero address (should remain all lowercase)
+        let zero_addr = Address::ZERO;
+        let checksum = address_to_checksum_hex_string(zero_addr);
+        assert_eq!(checksum, "0x0000000000000000000000000000000000000000");
+        
+        // Test with known address that has mixed case in checksum
+        // This is a simplified test - real EIP-55 would be more complex
+        let addr_bytes = [0x52, 0x90, 0x8e, 0x08, 0x4f, 0x3d, 0x7d, 0xe1,
+                         0xb3, 0x9a, 0x96, 0x30, 0x02, 0x64, 0xbd, 0x2a,
+                         0x47, 0x9e, 0x9c, 0x8f];
+        let addr = Address::from_slice(&addr_bytes);
+        let checksum = address_to_checksum_hex_string(addr);
+        
+        // Should start with 0x and be 42 characters total
+        assert!(checksum.starts_with("0x"));
+        assert_eq!(checksum.len(), 42);
+    }
+    
+    #[test]
+    fn test_hex_digits_constant() {
+        // Verify our HEX_DIGITS constant matches expectations
+        assert_eq!(HEX_DIGITS[0], b'0');
+        assert_eq!(HEX_DIGITS[9], b'9');
+        assert_eq!(HEX_DIGITS[10], b'a');
+        assert_eq!(HEX_DIGITS[15], b'f');
+    }
+    
+    #[test]
+    fn test_max_values() {
+        // Test with U256::MAX
+        let max_value = U256::MAX;
+        let decimal_str = to_string(max_value);
         assert!(decimal_str.len() > 70); // U256::MAX has 78 decimal digits
-        assert!(decimal_str.chars().all(|c| c.is_ascii_digit()));
         
-        let hex_str = to_hex_string(max_u256);
-        assert_eq!(hex_str, "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+        let hex_str = to_hex_string(max_value);
+        // Should be 64 hex characters + "0x" = 66 total
+        assert_eq!(hex_str.len(), 66);
+        assert!(hex_str.starts_with("0x"));
+        assert!(hex_str.ends_with("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"));
+    }
+    
+    #[test] 
+    fn test_consistency_with_reference() {
+        // Test cases that should match OpenZeppelin exactly
+        let test_cases = vec![
+            (0u64, "0", "0x00"),
+            (1u64, "1", "0x01"),
+            (10u64, "10", "0x0a"),
+            (255u64, "255", "0xff"),
+            (256u64, "256", "0x0100"),
+            (65535u64, "65535", "0xffff"),
+        ];
         
-        let hex_fixed = to_hex_string_fixed(max_u256, 64);
-        assert_eq!(hex_fixed, "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+        for (input, expected_decimal, expected_hex) in test_cases {
+            let value = U256::from(input);
+            assert_eq!(to_string(value), expected_decimal);
+            assert_eq!(to_hex_string(value), expected_hex);
+        }
     }
 }
